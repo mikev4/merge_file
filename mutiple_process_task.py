@@ -1,8 +1,13 @@
 from multiprocessing import Pool, cpu_count
 import os
 import time
-import read_and_write as rw
+import json
 import sys
+import logging
+import jsonlines
+from bs4 import BeautifulSoup
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class Worker:
     def __init__(self, process_size:int, file_path:str, split_lines_count:int):
@@ -13,35 +18,40 @@ class Worker:
     def map(self, i):
         # /Users/guoqiang04/codes/python/dataprocess/data/wx.jsonl
         in_file_path = self.file_path +"_part_"+ str(i)
-        out_file_path = self.file_path +"_part_"+ "out_"+ str(i)
-        print("in_file_path: %s, out_file_path: %s, count: %s"
+        out_file_path = self.file_path +"_part_out_"+ str(i)
+        logging.info("in_file_path: %s, out_file_path: %s, count: %s"
               % (in_file_path, out_file_path,  self.split_lines_count))
-        rw.read_and_write(in_file_path, out_file_path, int(self.split_lines_count))
+        self.read_and_write(in_file_path, out_file_path, int(self.split_lines_count))
     
     def reduce(self):
         # todo: 合并所有的小文件
-        print("合并所有的小文件")
-        print("清理中间文件")
+        merge_cmd = "cat " + self.file_path + "_part_out_* > " + self.file_path + "_out"
+        logging.info("合并所有的小文件: %s" % (merge_cmd))
+        os.system(merge_cmd)
         
+        clean_cmd= "rm " + self.file_path + "_part_*"
+        logging.info("清理中间文件: %s"%(clean_cmd))
+        os.system(clean_cmd)
+    
     def split(self):
-        print("拆分文件")
+        logging.info("拆分文件")
         split_num = self.split_file_by_line(self.file_path, int(self.split_lines_count))
         self.split_num = split_num
     
     def execute(self):
-        print('当前父进程: {}'.format(os.getpid()))
+        logging.info('当前父进程: {}'.format(os.getpid()))
         self.split()
         start = time.time()
         p = Pool(int(self.process_size))
         for i in range(int(self.split_num)):
             p.apply_async(self.map, args=(i,))
         
-        print('等待所有子进程完成。')
+        logging.info('等待所有子进程完成。')
         p.close()
         p.join()
         self.reduce()
         end = time.time()
-        print("总共用时{}秒".format((end - start))) 
+        logging.info("总共用时{}秒".format((end - start))) 
     
     """
     将指定文件按指定行数分割成若干文件。
@@ -53,6 +63,7 @@ class Worker:
     Returns:
         分割后文件的数量。
     """
+    @staticmethod
     def split_file_by_line(file_name:str, split_lines:int):
         split_files = []
         file_idx = 0
@@ -75,11 +86,53 @@ class Worker:
                 if fout:
                     fout.close()  # 确保最后一个输出流也被关闭
             except Exception as e:
-                print(f"Error occurred: {e}")
+                logging.info(f"Error occurred: {e}")
                 if fout:
                     fout.close()
-        print(f'file: {file_name}, split lines: {split_lines}, split files num: {len(split_files)}')
+        logging.info(f'file: {file_name}, split lines: {split_lines}, split files num: {len(split_files)}')
         return len(split_files)          
+ 
+    def read_and_write(self, in_path: str, out_path: str, total_count: int = 0):
+        errs = 0
+        cors = 0
+        idx = 0
+        with jsonlines.open(out_path, 'w') as writer:
+            with open(in_path, 'r') as reader:
+                for line in jsonlines.Reader(reader):
+                    idx += 1
+                    if (total_count > 0) and (idx % 100 == 0):
+                        logging.info('file: {}, idx: {}, total: {}, ratio: {}%'
+                                .format(in_path, idx, total_count, round(idx*100/total_count), 2))
+                    if type(line) is not dict:
+                        errs += 1
+                    else:
+                        try:
+                            parsed_json = self.parse_json(line)
+                            writer.write(parsed_json)
+                        except Exception as err:
+                            errs += 1
+                            logging.ERROR(err)
+                        else:
+                            cors += 1
+
+        logging.info('pid: {}, file: {}, errs: {}, cors: {} 100%.'.format(
+            os.getpid(), in_path, errs, cors))
+    
+    def parse_json(self, line: str):
+        # #start{ 代表 < ; #end} 代表 >
+        start = "#start{"
+        end = "#end}"
+        htmlstr = line['news_content_label']
+        soup = BeautifulSoup(htmlstr, 'html.parser')
+        img_tags = soup.find_all('img')
+        for img in img_tags:
+            img.replace_with("%simg src='%s' %s" % (start, img.get('src'), end))
+        news_content_label_format = soup.get_text(strip=True)
+        news_content_label_format = news_content_label_format.replace(
+            start, '<').replace(end, '>')
+        line['news_content_label_format'] = news_content_label_format
+        return line
+    
     
 if __name__=='__main__':
     if len(sys.argv) == 4:
