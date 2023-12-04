@@ -10,26 +10,30 @@ from bs4 import BeautifulSoup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class Worker:
+    
+    PART = "_part_"
+    PART_OUT = "_part_out_"
+    # 处理多少行输出一次进度
+    LOG_SEG = 1000
+    
     def __init__(self, process_size:int, file_path:str, split_lines_count:int):
         self.process_size = process_size
         self.file_path = file_path
         self.split_lines_count = split_lines_count
     
     def map(self, i):
-        # /Users/guoqiang04/codes/python/dataprocess/data/wx.jsonl
-        in_file_path = self.file_path +"_part_"+ str(i)
-        out_file_path = self.file_path +"_part_out_"+ str(i)
+        in_file_path = self.file_path + self.PART + str(i)
+        out_file_path = self.file_path + self.PART_OUT + str(i)
         logging.info("in_file_path: %s, out_file_path: %s, count: %s"
               % (in_file_path, out_file_path,  self.split_lines_count))
         self.read_and_write(in_file_path, out_file_path, int(self.split_lines_count))
     
     def reduce(self):
-        # todo: 合并所有的小文件
-        merge_cmd = "cat " + self.file_path + "_part_out_* > " + self.file_path + "_out"
+        merge_cmd = "cat " + self.file_path + self.PART_OUT + "* >"  + self.file_path + "_out"
         logging.info("合并所有的小文件: %s" % (merge_cmd))
         os.system(merge_cmd)
         
-        clean_cmd= "rm " + self.file_path + "_part_*"
+        clean_cmd= "rm " + self.file_path + self.PART + "*"
         logging.info("清理中间文件: %s"%(clean_cmd))
         os.system(clean_cmd)
     
@@ -100,7 +104,7 @@ class Worker:
             with open(in_path, 'r') as reader:
                 for line in jsonlines.Reader(reader):
                     idx += 1
-                    if (total_count > 0) and (idx % 100 == 0):
+                    if (total_count > 0) and (idx % self.LOG_SEG == 0):
                         logging.info('file: {}, idx: {}, total: {}, ratio: {}%'
                                 .format(in_path, idx, total_count, round(idx*100/total_count), 2))
                     if type(line) is not dict:
@@ -139,7 +143,7 @@ if __name__=='__main__':
         process_size = sys.argv[1]
         file_path = sys.argv[2]
         split_lines_count = sys.argv[3]
-        print("process_size: %s, file_prefix: %s, split_count: %s" % 
+        print("process_size: %s, file_path: %s, split_lines_count: %s" % 
               (process_size, file_path, split_lines_count))
         
         worker = Worker(process_size, file_path, split_lines_count)
